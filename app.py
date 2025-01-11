@@ -78,3 +78,16 @@ def validate_key(key: str, hwid: str, db=Depends(get_db)):
     if license_key.hwid != hwid:
         raise HTTPException(status_code=403, detail="HWID mismatch")
     return {"message": "Key is valid"}
+
+@app.post("/generate")
+def generate_key(expiration_days: int, db=Depends(get_db)):
+    """
+    Генерация нового ключа.
+    :param expiration_days: Срок действия ключа в днях.
+    """
+    new_key = str(uuid.uuid4())  # Генерация уникального ключа
+    expiration_date = (datetime.now() + timedelta(days=expiration_days)).strftime("%Y-%m-%d")
+    license_key = LicenseKey(key=new_key, expiration_date=expiration_date, active=True)
+    db.add(license_key)
+    db.commit()
+    return {"message": "Key generated successfully", "key": new_key, "expiration_date": expiration_date}
