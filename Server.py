@@ -1,76 +1,67 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy import create_engine, Column, String, Integer, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta
-from typing import Optional
-import sqlite3
+
+DATABASE_URL = "postgresql://postgres:TsgOlDKGQPHBfjJjjwZkyGrUYpbvZdlX@postgres.railway.internal:5432/railway"
+
+Base = declarative_base()
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 app = FastAPI()
 
-# Инициализация базы данных
-def init_db():
-    conn = sqlite3.connect("keys.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS keys (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        key TEXT UNIQUE,
-        hwid TEXT,
-        expiry_date TEXT,
-        active INTEGER
-    )
-    """)
-    conn.commit()
-    conn.close()
+class LicenseKey(Base):
+    __tablename__ = "license_keys"
+    key = Column(String, primary_key=True, index=True)
+    hwid = Column(String, nullable=True)  # HWID привязывается после активации
+    expiration_date = Column(String, nullable=False)  # Дата окончания действия
+    active = Column(Boolean, default=True)  # Статус ключа
 
-init_db()
+Base.metadata.create_all(bind=engine)
 
-# Функция проверки ключа
-@app.post("/validate_key/")
-def validate_key(key: str, hwid: Optional[str] = None):
-    conn = sqlite3.connect("keys.db")
-    cursor = conn.cursor()
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-    cursor.execute("SELECT * FROM keys WHERE key = ?", (key,))
-    row = cursor.fetchone()
-    if not row:
+@app.post("/activate")
+def activate_key(key: str, hwid: str, db=Depends(get_db)):
+    license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
+    if not license_key:
         raise HTTPException(status_code=404, detail="Key not found")
-
-    stored_hwid, expiry_date, active = row[2], row[3], row[4]
-    if not active:
+    if not license_key.active:
         raise HTTPException(status_code=403, detail="Key is deactivated")
-    if expiry_date and datetime.strptime(expiry_date, "%Y-%m-%d %H:%M:%S") < datetime.now():
-        raise HTTPException(status_code=403, detail="Key has expired")
+    if license_key.expiration_date < datetime.now().strftime("%Y-%m-%d"):
+        raise HTTPException(status_code=403, detail="Key is expired")
+    if license_key.hwid and license_key.hwid != hwid:
+        raise HTTPException(status_code=403, detail="Key is already bound to another HWID")
 
-    # Привязка HWID при первой активации
-    if not stored_hwid:
-        cursor.execute("UPDATE keys SET hwid = ? WHERE key = ?", (hwid, key))
-        conn.commit()
-    elif stored_hwid != hwid:
+    license_key.hwid = hwid
+    db.commit()
+    return {"message": "Key activated successfully"}
+
+@app.get("/validate")
+def validate_key(key: str, hwid: str, db=Depends(get_db)):
+    license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
+    if not license_key:
+        raise HTTPException(status_code=404, detail="Key not found")
+    if not license_key.active:
+        raise HTTPException(status_code=403, detail="Key is deactivated")
+    if license_key.expiration_date < datetime.now().strftime("%Y-%m-%d"):
+        raise HTTPException(status_code=403, detail="Key is expired")
+    if license_key.hwid != hwid:
         raise HTTPException(status_code=403, detail="HWID mismatch")
-
-    conn.close()
     return {"message": "Key is valid"}
 
-# Добавление нового ключа
-@app.post("/add_key/")
-def add_key(key: str, expiry_days: int):
-    expiry_date = (datetime.now() + timedelta(days=expiry_days)).strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect("keys.db")
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO keys (key, hwid, expiry_date, active) VALUES (?, ?, ?, ?)",
-                       (key, None, expiry_date, 1))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=400, detail="Key already exists")
-    conn.close()
-    return {"message": "Key added successfully"}
-
-# Деактивация ключа
-@app.post("/deactivate_key/")
-def deactivate_key(key: str):
-    conn = sqlite3.connect("keys.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE keys SET active = 0 WHERE key = ?", (key,))
-    conn.commit()
-    conn.close()
-    return {"message": "Key deactivated"}
+@app.post("/deactivate")
+def deactivate_key(key: str, db=Depends(get_db)):
+    license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
+    if not license_key:
+        raise HTTPException(status_code=404, detail="Key not found")
+    license_key.active = False
+    db.commit()
+    return {"message": "Key deactivated successfully"}
