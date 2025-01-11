@@ -36,39 +36,62 @@ def get_db():
 @app.post("/activate")
 def activate_key(key: str, hwid: str, db=Depends(get_db)):
     license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
+    
+    # Если ключ не найден, возвращаем ошибку
     if not license_key:
         raise HTTPException(status_code=404, detail="Key not found")
+    
+    # Если ключ деактивирован, возвращаем ошибку
     if not license_key.active:
         raise HTTPException(status_code=403, detail="Key is deactivated")
+    
+    # Если ключ истек, возвращаем ошибку
     if license_key.expiration_date < datetime.now().strftime("%Y-%m-%d"):
         raise HTTPException(status_code=403, detail="Key is expired")
+    
+    # Если HWID уже привязан, проверяем, совпадает ли он с текущим HWID
     if license_key.hwid and license_key.hwid != hwid:
         raise HTTPException(status_code=403, detail="Key is already bound to another HWID")
+    
+    # Если HWID ещё не привязан, привязываем его
+    if not license_key.hwid:
+        license_key.hwid = hwid
+        db.commit()
 
-    license_key.hwid = hwid
-    db.commit()
     return {"message": "Key activated successfully"}
 
 # Валидация ключа
 @app.get("/validate")
 def validate_key(key: str, hwid: str, db=Depends(get_db)):
     license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
+    
+    # Если ключ не найден, возвращаем ошибку
     if not license_key:
         raise HTTPException(status_code=404, detail="Key not found")
+    
+    # Если ключ деактивирован, возвращаем ошибку
     if not license_key.active:
         raise HTTPException(status_code=403, detail="Key is deactivated")
+    
+    # Если ключ истек, возвращаем ошибку
     if license_key.expiration_date < datetime.now().strftime("%Y-%m-%d"):
         raise HTTPException(status_code=403, detail="Key is expired")
+    
+    # Если HWID не совпадает, возвращаем ошибку
     if license_key.hwid != hwid:
         raise HTTPException(status_code=403, detail="HWID mismatch")
+    
     return {"message": "Key is valid"}
 
 # Деактивация ключа
 @app.post("/deactivate")
 def deactivate_key(key: str, db=Depends(get_db)):
     license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
+    
+    # Если ключ не найден, возвращаем ошибку
     if not license_key:
         raise HTTPException(status_code=404, detail="Key not found")
+    
     license_key.active = False
     db.commit()
     return {"message": "Key deactivated successfully"}
@@ -96,8 +119,11 @@ def extend_key(key: str, additional_days: int, db=Depends(get_db)):
     :param additional_days: Количество дополнительных дней.
     """
     license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
+    
+    # Если ключ не найден, возвращаем ошибку
     if not license_key:
         raise HTTPException(status_code=404, detail="Key not found")
+    
     current_expiration_date = datetime.strptime(license_key.expiration_date, "%Y-%m-%d")
     new_expiration_date = current_expiration_date + timedelta(days=additional_days)
     license_key.expiration_date = new_expiration_date.strftime("%Y-%m-%d")
@@ -112,8 +138,11 @@ def reactivate_key(key: str, db=Depends(get_db)):
     :param key: Ключ для активации.
     """
     license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
+    
+    # Если ключ не найден, возвращаем ошибку
     if not license_key:
         raise HTTPException(status_code=404, detail="Key not found")
+    
     license_key.active = True
     db.commit()
     return {"message": "Key reactivated successfully"}
