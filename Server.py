@@ -1,45 +1,76 @@
 from fastapi import FastAPI, HTTPException
 from datetime import datetime, timedelta
-import uuid
+from typing import Optional
+import sqlite3
 
 app = FastAPI()
 
-# Хранилище ключей (замените на базу данных)
-keys_db = {}
+# Инициализация базы данных
+def init_db():
+    conn = sqlite3.connect("keys.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS keys (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT UNIQUE,
+        hwid TEXT,
+        expiry_date TEXT,
+        active INTEGER
+    )
+    """)
+    conn.commit()
+    conn.close()
 
+init_db()
 
-# Генерация нового ключа
-@app.post("/generate_key")
-def generate_key(hwid: str, days_valid: int):
-    key = str(uuid.uuid4())
-    expiry_date = datetime.utcnow() + timedelta(days=days_valid)
-    keys_db[key] = {"hwid": hwid, "expiry_date": expiry_date, "active": True}
-    return {"key": key, "expiry_date": expiry_date}
+# Функция проверки ключа
+@app.post("/validate_key/")
+def validate_key(key: str, hwid: Optional[str] = None):
+    conn = sqlite3.connect("keys.db")
+    cursor = conn.cursor()
 
-
-# Проверка ключа
-@app.post("/verify_key")
-def verify_key(key: str, hwid: str):
-    if key not in keys_db:
+    cursor.execute("SELECT * FROM keys WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Key not found")
 
-    key_data = keys_db[key]
-    if not key_data["active"]:
+    stored_hwid, expiry_date, active = row[2], row[3], row[4]
+    if not active:
         raise HTTPException(status_code=403, detail="Key is deactivated")
+    if expiry_date and datetime.strptime(expiry_date, "%Y-%m-%d %H:%M:%S") < datetime.now():
+        raise HTTPException(status_code=403, detail="Key has expired")
 
-    if key_data["hwid"] != hwid:
+    # Привязка HWID при первой активации
+    if not stored_hwid:
+        cursor.execute("UPDATE keys SET hwid = ? WHERE key = ?", (hwid, key))
+        conn.commit()
+    elif stored_hwid != hwid:
         raise HTTPException(status_code=403, detail="HWID mismatch")
 
-    if datetime.utcnow() > key_data["expiry_date"]:
-        raise HTTPException(status_code=403, detail="Key expired")
+    conn.close()
+    return {"message": "Key is valid"}
 
-    return {"status": "Key valid"}
-
+# Добавление нового ключа
+@app.post("/add_key/")
+def add_key(key: str, expiry_days: int):
+    expiry_date = (datetime.now() + timedelta(days=expiry_days)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect("keys.db")
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO keys (key, hwid, expiry_date, active) VALUES (?, ?, ?, ?)",
+                       (key, None, expiry_date, 1))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Key already exists")
+    conn.close()
+    return {"message": "Key added successfully"}
 
 # Деактивация ключа
-@app.post("/deactivate_key")
+@app.post("/deactivate_key/")
 def deactivate_key(key: str):
-    if key not in keys_db:
-        raise HTTPException(status_code=404, detail="Key not found")
-    keys_db[key]["active"] = False
-    return {"status": "Key deactivated"}
+    conn = sqlite3.connect("keys.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE keys SET active = 0 WHERE key = ?", (key,))
+    conn.commit()
+    conn.close()
+    return {"message": "Key deactivated"}
