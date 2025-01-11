@@ -66,31 +66,15 @@ def activate_key(request: dict, db=Depends(get_db)):
 
     return {"message": "Key activated successfully"}
 
-# Валидация ключа
-@app.post("/validate")
-def validate_key(request: dict, db=Depends(get_db)):
-    key = request.get("key")
-    hwid = request.get("hwid")
-
-    if not key or not hwid:
-        raise HTTPException(status_code=400, detail="Missing 'key' or 'hwid' in request body")
-
+@app.get("/validate")
+def validate_key(key: str, hwid: str, db=Depends(get_db)):
     license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
-    
-    # Если ключ не найден, возвращаем ошибку
     if not license_key:
         raise HTTPException(status_code=404, detail="Key not found")
-    
-    # Если ключ деактивирован, возвращаем ошибку
     if not license_key.active:
         raise HTTPException(status_code=403, detail="Key is deactivated")
-    
-    # Если ключ истек, возвращаем ошибку
     if license_key.expiration_date < datetime.now().strftime("%Y-%m-%d"):
         raise HTTPException(status_code=403, detail="Key is expired")
-    
-    # Если HWID не совпадает, возвращаем ошибку
     if license_key.hwid != hwid:
         raise HTTPException(status_code=403, detail="HWID mismatch")
-    
     return {"message": "Key is valid"}
